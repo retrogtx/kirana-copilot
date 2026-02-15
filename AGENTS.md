@@ -27,7 +27,7 @@ Non-goals (for hackathon)
 - Perfect catalog onboarding. We start small with seeded SKUs + aliasing.
 
 ## System architecture (high level)
-- Telegram Bot Worker: receives updates (long polling), downloads voice files, sends replies
+- Telegram Webhook: Next.js API route (`app/api/telegram/route.ts`) receives POSTed updates from Telegram via grammY `webhookCallback`. Deployed on Vercel as a serverless function. Long-polling fallback available via `bun run bot` for local dev.
 - Core Backend: intent extraction (Claude), action executor (inventory/ledger rules), DB
 - DB: SQLite for speed (Postgres optional)
 - Optional Web Dashboard: read-only views (today, low stock, ledger)
@@ -153,5 +153,6 @@ DATABASE_URL=sqlite:./data.db  (or postgres url)
 APP_BASE_URL=http://localhost:3000
 
 ## Notes
-- Telegram long polling is the default for hackathon reliability.
+- Telegram webhook via Next.js API route, deployed on Vercel.
+- After deploy, register the webhook once: `bun run webhook:set`.
 - WhatsApp is intentionally deferred.
