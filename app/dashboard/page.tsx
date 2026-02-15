@@ -18,33 +18,28 @@ export default async function DashboardPage() {
 
   const storeId = await getStoreByUserId(session.userId);
 
-  // Get user info for nav
   const [user] = await db
-    .select({ firstName: users.firstName, username: users.username })
+    .select({
+      firstName: users.firstName,
+      username: users.username,
+      photoUrl: users.photoUrl,
+    })
     .from(users)
     .where(eq(users.id, session.userId))
     .limit(1);
 
   if (!storeId) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-zinc-950">
-        <div className="flex flex-col items-center gap-4 px-6 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-zinc-900 text-2xl text-white dark:bg-white dark:text-zinc-900">
-            K
-          </div>
-          <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
-            No store found
-          </h1>
-          <p className="max-w-sm text-zinc-500 dark:text-zinc-400">
-            Start by chatting with the Kirana Copilot bot on Telegram. Add some
-            stock, record a sale, and your data will appear here.
-          </p>
+      <div className="flex min-h-screen items-center justify-center bg-[#0a0a0a]">
+        <div className="text-center">
+          <p className="text-sm text-[#666]">No store found.</p>
+          <p className="mt-1 text-xs text-[#444]">Chat with the bot on Telegram first.</p>
         </div>
       </div>
     );
   }
 
-  const [summary, inventory, ledger, transactions] = await Promise.all([
+  const [summary, inventory, ledger, recentTxns] = await Promise.all([
     getDailySummary(storeId),
     getInventory(storeId),
     getLedgerOverview(storeId),
@@ -52,254 +47,171 @@ export default async function DashboardPage() {
   ]);
 
   const lowStockCount = inventory.filter((i) => i.isLow).length;
+  const totalUdhar = ledger.reduce((sum, p) => sum + Math.max(0, p.balance), 0);
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
-      {/* Nav */}
-      <nav className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900 text-sm font-bold text-white dark:bg-white dark:text-zinc-900">
-              K
-            </div>
-            <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-              Kirana Copilot
-            </span>
-          </div>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-zinc-500 dark:text-zinc-400">
-              {user?.firstName ?? "User"}
-              {user?.username ? ` (@${user.username})` : ""}
-            </span>
-            <LogoutButton />
-          </div>
+    <div className="min-h-screen bg-[#0a0a0a] text-[#ededed] antialiased">
+      {/* Nav — barely there */}
+      <nav className="flex items-center justify-between px-6 py-4">
+        <span className="text-[13px] font-medium tracking-tight text-[#888]">Kirana Copilot</span>
+        <div className="flex items-center gap-3">
+          {user?.photoUrl && <img src={user.photoUrl} alt="" className="h-5 w-5 rounded-full opacity-70" />}
+          <span className="text-[13px] text-[#555]">{user?.firstName}</span>
+          <LogoutButton />
         </div>
       </nav>
 
-      {/* Content */}
-      <div className="mx-auto max-w-5xl space-y-6 px-4 py-6">
-        {/* Today's Summary */}
-        <section>
-          <h2 className="mb-3 text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-            Today&apos;s Summary &mdash; {summary.date}
-          </h2>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <SummaryCard label="Sales" value={`${summary.salesCount} txns`} sub={`${summary.salesQty} items`} />
-            <SummaryCard label="Revenue" value={`₹${summary.salesRevenue.toLocaleString()}`} />
-            <SummaryCard label="New Udhar" value={`₹${summary.newUdhar.toLocaleString()}`} />
-            <SummaryCard label="Payments In" value={`₹${summary.paymentsReceived.toLocaleString()}`} />
-          </div>
-        </section>
+      <div className="mx-auto max-w-[1200px] px-6 pb-20">
+        {/* Header */}
+        <div className="pb-8 pt-4">
+          <p className="text-[11px] font-medium uppercase tracking-[0.15em] text-[#444]">
+            {new Date(summary.date + "T00:00:00").toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" })}
+          </p>
+          <h1 className="mt-1 text-[28px] font-semibold tracking-tight text-[#fafafa]">Overview</h1>
+        </div>
 
-        {/* Inventory */}
-        <section>
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-              Inventory
-            </h2>
-            {lowStockCount > 0 && (
-              <span className="rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400">
-                {lowStockCount} low stock
-              </span>
-            )}
-          </div>
-          {inventory.length === 0 ? (
-            <EmptyState text="No items in inventory yet." />
-          ) : (
-            <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-zinc-100 text-xs font-medium uppercase tracking-wider text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-                    <th className="px-4 py-2.5">Item</th>
-                    <th className="px-4 py-2.5">Stock</th>
-                    <th className="px-4 py-2.5">Min</th>
-                    <th className="px-4 py-2.5">Unit</th>
-                    <th className="px-4 py-2.5">Cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {inventory.map((item) => (
-                    <tr
-                      key={item.id}
-                      className={`border-b border-zinc-50 dark:border-zinc-800/50 ${item.isLow ? "bg-red-50 dark:bg-red-950/20" : ""}`}
-                    >
-                      <td className="px-4 py-2.5 font-medium text-zinc-900 dark:text-zinc-100">
-                        {item.name}
-                      </td>
-                      <td className={`px-4 py-2.5 ${item.isLow ? "font-semibold text-red-600 dark:text-red-400" : "text-zinc-700 dark:text-zinc-300"}`}>
-                        {item.currentStock}
-                      </td>
-                      <td className="px-4 py-2.5 text-zinc-500 dark:text-zinc-400">
-                        {item.minStock}
-                      </td>
-                      <td className="px-4 py-2.5 text-zinc-500 dark:text-zinc-400">
-                        {item.unit ?? "pcs"}
-                      </td>
-                      <td className="px-4 py-2.5 text-zinc-500 dark:text-zinc-400">
-                        {item.lastCostPrice ? `₹${item.lastCostPrice}` : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        {/* Metrics — clean row, no cards, no borders */}
+        <div className="grid grid-cols-2 gap-x-10 gap-y-6 pb-10 sm:grid-cols-4">
+          <Metric label="Revenue" value={formatINR(summary.salesRevenue)} />
+          <Metric label="Sales" value={`${summary.salesQty}`} sub={`${summary.salesCount} orders`} />
+          <Metric label="Udhar" value={formatINR(summary.newUdhar)} warn={summary.newUdhar > 0} />
+          <Metric label="Collected" value={formatINR(summary.paymentsReceived)} />
+        </div>
+
+        <div className="h-px bg-[#1a1a1a]" />
+
+        {/* Three columns */}
+        <div className="grid gap-0 lg:grid-cols-12">
+          {/* Inventory */}
+          <section className="border-r border-[#1a1a1a] py-8 pr-8 lg:col-span-5">
+            <div className="mb-5 flex items-baseline justify-between">
+              <h2 className="text-[13px] font-medium text-[#888]">Inventory</h2>
+              <div className="flex items-center gap-3">
+                {lowStockCount > 0 && (
+                  <span className="text-[11px] text-[#e5484d]">{lowStockCount} low</span>
+                )}
+                <span className="text-[11px] text-[#444]">{inventory.length}</span>
+              </div>
             </div>
-          )}
-        </section>
-
-        {/* Udhar Ledger */}
-        <section>
-          <h2 className="mb-3 text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-            Udhar Ledger
-          </h2>
-          {ledger.length === 0 ? (
-            <EmptyState text="No customers in ledger yet." />
-          ) : (
-            <div className="space-y-3">
-              {ledger.map((party) => (
-                <div
-                  key={party.id}
-                  className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900"
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-zinc-900 dark:text-zinc-100">
-                        {party.name}
-                      </p>
-                      {party.phone && (
-                        <p className="text-xs text-zinc-400">{party.phone}</p>
-                      )}
-                    </div>
-                    <p
-                      className={`text-lg font-semibold ${party.balance > 0 ? "text-red-600 dark:text-red-400" : party.balance < 0 ? "text-green-600 dark:text-green-400" : "text-zinc-500"}`}
-                    >
-                      ₹{Math.abs(party.balance).toLocaleString()}
-                      {party.balance > 0 ? " due" : party.balance < 0 ? " overpaid" : ""}
-                    </p>
-                  </div>
-                  {party.recentEntries.length > 0 && (
-                    <div className="mt-3 space-y-1 border-t border-zinc-100 pt-3 dark:border-zinc-800">
-                      {party.recentEntries.map((e, i) => (
-                        <div
-                          key={i}
-                          className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400"
-                        >
-                          <span>
-                            {e.amount > 0 ? "Udhar" : "Payment"}: ₹{Math.abs(e.amount)}
-                            {e.note ? ` — ${e.note}` : ""}
-                          </span>
-                          <span>
-                            {e.ts.toLocaleDateString("en-IN", {
-                              day: "numeric",
-                              month: "short",
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                          </span>
+            {inventory.length === 0 ? (
+              <p className="py-10 text-center text-[12px] text-[#333]">No items yet</p>
+            ) : (
+              <div className="space-y-0">
+                {inventory.map((item) => {
+                  const maxRef = Math.max(item.minStock * 3, item.currentStock, 1);
+                  const pct = Math.min(100, (item.currentStock / maxRef) * 100);
+                  return (
+                    <div key={item.id} className="group flex items-center justify-between py-[9px]">
+                      <div className="flex items-center gap-3">
+                        {item.isLow && <span className="h-[5px] w-[5px] rounded-full bg-[#e5484d]" />}
+                        {!item.isLow && <span className="h-[5px] w-[5px] rounded-full bg-[#2a2a2a] group-hover:bg-[#444]" />}
+                        <span className="text-[13px] text-[#ededed]">{item.name}</span>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <div className="hidden w-[60px] sm:block">
+                          <div className="h-[3px] w-full rounded-full bg-[#1a1a1a]">
+                            <div
+                              className={`h-[3px] rounded-full ${item.isLow ? "bg-[#e5484d]" : "bg-[#333]"}`}
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        {/* Recent Transactions */}
-        <section>
-          <h2 className="mb-3 text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-            Recent Transactions
-          </h2>
-          {transactions.length === 0 ? (
-            <EmptyState text="No transactions yet." />
-          ) : (
-            <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-zinc-100 text-xs font-medium uppercase tracking-wider text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-                    <th className="px-4 py-2.5">Type</th>
-                    <th className="px-4 py-2.5">Item</th>
-                    <th className="px-4 py-2.5">Qty</th>
-                    <th className="px-4 py-2.5">Price</th>
-                    <th className="px-4 py-2.5">Time</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {transactions.map((txn) => (
-                    <tr
-                      key={txn.id}
-                      className="border-b border-zinc-50 dark:border-zinc-800/50"
-                    >
-                      <td className="px-4 py-2.5">
-                        <span
-                          className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
-                            txn.type === "SALE"
-                              ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-                              : "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-                          }`}
-                        >
-                          {txn.type === "SALE" ? "Sale" : "Stock In"}
+                        <span className={`w-8 text-right font-mono text-[13px] ${item.isLow ? "text-[#e5484d]" : "text-[#888]"}`}>
+                          {item.currentStock}
                         </span>
-                      </td>
-                      <td className="px-4 py-2.5 font-medium text-zinc-900 dark:text-zinc-100">
-                        {txn.itemName}
-                      </td>
-                      <td className="px-4 py-2.5 text-zinc-700 dark:text-zinc-300">
-                        {txn.qty}
-                      </td>
-                      <td className="px-4 py-2.5 text-zinc-500 dark:text-zinc-400">
-                        {txn.price ? `₹${txn.price}` : "—"}
-                      </td>
-                      <td className="px-4 py-2.5 text-zinc-500 dark:text-zinc-400">
-                        {txn.ts.toLocaleDateString("en-IN", {
-                          day: "numeric",
-                          month: "short",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* Udhar */}
+          <section className="border-r border-[#1a1a1a] py-8 px-8 lg:col-span-3">
+            <div className="mb-5 flex items-baseline justify-between">
+              <h2 className="text-[13px] font-medium text-[#888]">Udhar</h2>
+              {totalUdhar > 0 && (
+                <span className="font-mono text-[12px] text-[#e5484d]">{formatINR(totalUdhar)}</span>
+              )}
             </div>
-          )}
-        </section>
+            {ledger.length === 0 ? (
+              <p className="py-10 text-center text-[12px] text-[#333]">No entries</p>
+            ) : (
+              <div className="space-y-5">
+                {ledger.map((party) => (
+                  <div key={party.id}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[13px] text-[#ededed]">{party.name}</span>
+                      <span className={`font-mono text-[13px] ${party.balance > 0 ? "text-[#e5484d]" : "text-[#46a758]"}`}>
+                        {formatINR(Math.abs(party.balance))}
+                      </span>
+                    </div>
+                    {party.recentEntries.length > 0 && (
+                      <div className="mt-1.5 space-y-0.5 pl-0">
+                        {party.recentEntries.slice(0, 2).map((e, i) => (
+                          <p key={i} className="text-[11px] text-[#444]">
+                            {e.amount > 0 ? "+" : "−"}{formatINR(Math.abs(e.amount))}
+                            {e.note ? ` ${e.note}` : ""}
+                            <span className="ml-1 text-[#333]">
+                              {e.ts.toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
+                            </span>
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* Transactions */}
+          <section className="py-8 pl-8 lg:col-span-4">
+            <div className="mb-5 flex items-baseline justify-between">
+              <h2 className="text-[13px] font-medium text-[#888]">Activity</h2>
+              <span className="text-[11px] text-[#444]">{recentTxns.length}</span>
+            </div>
+            {recentTxns.length === 0 ? (
+              <p className="py-10 text-center text-[12px] text-[#333]">No activity</p>
+            ) : (
+              <div className="space-y-0">
+                {recentTxns.map((txn) => (
+                  <div key={txn.id} className="flex items-center justify-between py-[9px]">
+                    <div className="flex items-center gap-3">
+                      <span className={`h-[5px] w-[5px] rounded-full ${txn.type === "SALE" ? "bg-[#ededed]" : "bg-[#46a758]"}`} />
+                      <div>
+                        <span className="text-[13px] text-[#ededed]">{txn.itemName}</span>
+                        <span className="ml-2 text-[11px] text-[#444]">
+                          {txn.ts.toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
+                        </span>
+                      </div>
+                    </div>
+                    <span className={`font-mono text-[13px] ${txn.type === "SALE" ? "text-[#888]" : "text-[#46a758]"}`}>
+                      {txn.type === "SALE" ? `−${txn.qty}` : `+${txn.qty}`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
       </div>
     </div>
   );
 }
 
-// ── Small components ────────────────────────────────────────────────────────
-
-function SummaryCard({
-  label,
-  value,
-  sub,
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-}) {
+function Metric({ label, value, sub, warn }: { label: string; value: string; sub?: string; warn?: boolean }) {
   return (
-    <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-      <p className="text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-        {label}
-      </p>
-      <p className="mt-1 text-xl font-semibold text-zinc-900 dark:text-zinc-50">
-        {value}
-      </p>
-      {sub && (
-        <p className="text-xs text-zinc-400 dark:text-zinc-500">{sub}</p>
-      )}
+    <div>
+      <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-[#555]">{label}</p>
+      <p className={`mt-1 text-[22px] font-semibold tabular-nums tracking-tight ${warn ? "text-[#e5484d]" : "text-[#fafafa]"}`}>{value}</p>
+      {sub && <p className="mt-0.5 text-[11px] text-[#444]">{sub}</p>}
     </div>
   );
 }
 
-function EmptyState({ text }: { text: string }) {
-  return (
-    <div className="rounded-lg border border-dashed border-zinc-200 bg-white py-8 text-center text-sm text-zinc-400 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-500">
-      {text}
-    </div>
-  );
+function formatINR(n: number) {
+  if (n === 0) return "₹0";
+  return `₹${n.toLocaleString("en-IN")}`;
 }
