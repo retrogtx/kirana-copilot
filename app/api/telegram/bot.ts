@@ -251,8 +251,13 @@ bot.on("message:voice", async (ctx) => {
 
     const transcription = await openai.audio.transcriptions.create({
       file: new File([arrayBuffer], "voice.ogg", { type: "audio/ogg" }),
-      model: "whisper-1",
-      language: "hi",
+      model: "gpt-4o-transcribe",
+      // Prompt steers Whisper toward Romanized Hinglish (not Devanagari).
+      // Whisper mirrors the script/style of the prompt text.
+      prompt:
+        "Kirana store mein: Maggi, Dairy Milk, Parle-G, Amul milk, atta, dal, chawal, rice, sugar, cheeni, oil, tel, sabun, biscuit. " +
+        "Udhar, hisaab, bik gaye, aaya, khatam ho raha hai, reorder, stock, sale. " +
+        "Ramesh, Suresh, Mohan. 10 packet, 5 kilo, 200 rupees.",
     });
 
     const text = transcription.text.trim();
