@@ -54,7 +54,7 @@ function markProcessed(chatId: number, messageId: number): boolean {
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // ── /start command ──────────────────────────────────────────────────
-// First-time user: auto-creates an org. Returning user: shows help.
+// Returning user: shows help. New user: asks them to /create or /join.
 
 bot.command("start", async (ctx) => {
   const from = ctx.from;
@@ -88,19 +88,51 @@ bot.command("start", async (ctx) => {
     return;
   }
 
-  // First-time user — auto-create an org named after them
-  const orgName = `${from.first_name}'s Store`;
+  // New user — ask them what they want to do
+  await ctx.reply(
+    `Namaste ${from.first_name}! Welcome to Kirana Copilot.\n\n` +
+      "To get started, pick one:\n\n" +
+      "1. /create — Create a new organization (you'll be the admin)\n" +
+      "2. /join <code> — Join an existing org with an invite code\n\n" +
+      "Example: /join KC-A1B2C3D4",
+  );
+});
+
+// ── /create command ──────────────────────────────────────────────────
+// Create a new organization. User becomes admin and gets an invite code.
+
+bot.command("create", async (ctx) => {
+  const from = ctx.from;
+  if (!from) return;
+
+  const userId = await upsertUser({
+    id: from.id,
+    first_name: from.first_name,
+    last_name: from.last_name,
+    username: from.username,
+  });
+
+  const existingOrg = await getUserOrg(userId);
+  if (existingOrg) {
+    await ctx.reply(
+      `You're already in "${existingOrg.orgName}". You can't create another organization.`,
+    );
+    return;
+  }
+
+  // Use custom name if provided, otherwise default to "<Name>'s Store"
+  const customName = ctx.match?.trim();
+  const orgName = customName || `${from.first_name}'s Store`;
   const result = await createOrganization(userId, orgName);
 
   await ctx.reply(
-    `Namaste ${from.first_name}! Your organization "${orgName}" has been created.\n\n` +
+    `Organization "${orgName}" created!\n\n` +
       `Your invite code: ${result.inviteCode}\n` +
-      `Share this code with your team — they can join by sending:\n/join ${result.inviteCode}\n\n` +
+      `Share this with your team — they can join by sending:\n/join ${result.inviteCode}\n\n` +
       "Ab baat karo — main samajh jaunga:\n" +
       '• "Maggi 10 aaya" (stock add)\n' +
       '• "Maggi 3 bik gayi" (sale)\n' +
       '• "Ramesh ko 450 udhar likh do"\n' +
-      '• "Kya khatam ho raha hai?"\n' +
       '• "Aaj ka hisaab"\n\n' +
       "Text ya voice note — dono chalega!",
   );
