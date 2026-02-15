@@ -120,3 +120,21 @@ export const reminders = pgTable("reminders", {
   dueTs: timestamp("due_ts").notNull(),
   status: text("status").notNull().default("pending"), // pending | sent | done
 });
+
+// ── Auto-reorders (items ordered from Amazon / JioMart etc.) ────────────────
+
+export const orders = pgTable("orders", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id")
+    .notNull()
+    .references(() => stores.id),
+  itemId: integer("item_id")
+    .notNull()
+    .references(() => items.id),
+  qty: integer("qty").notNull(),
+  source: text("source").notNull(), // AMAZON_IN | JIOMART | BIGBASKET
+  searchUrl: text("search_url").notNull(),
+  estimatedCost: numeric("estimated_cost"),
+  status: text("status").notNull().default("PLACED"), // PLACED | CONFIRMED | DELIVERED | CANCELLED
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});

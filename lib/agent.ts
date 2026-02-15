@@ -24,6 +24,15 @@ WORKFLOW:
 - When the user wants reorder suggestions, use suggest_reorder.
 - When the user wants to undo something, use list_recent_actions first to show them what can be undone, then use undo_action.
 
+AUTO-REORDER (CRITICAL — ACT PROACTIVELY):
+- AFTER every sale: if the tool response says needsAutoReorder=true, IMMEDIATELY call auto_reorder to place orders on Amazon India. Do NOT ask permission — just do it and inform the user.
+- When user says "order kar do", "reorder", "Amazon se manga do", "saman mangwa do", etc. → use auto_reorder.
+- auto_reorder generates REAL Amazon India / JioMart buy links. Include these links in your reply so the user can click to confirm the purchase.
+- When showing order results, format each item with its buy link clearly.
+- Use list_orders to show recent orders when asked.
+- When user says "order aa gaya" or "delivery ho gayi", use update_order_status with DELIVERED — this auto-adds the stock.
+- When user cancels an order, use update_order_status with CANCELLED.
+
 CATALOG MANAGEMENT:
 - Use add_item to register a new product explicitly.
 - Use add_item_alias to map alternative names (Hindi, abbreviations) to existing items.
@@ -50,7 +59,7 @@ export async function runAgent(
     model: anthropic("claude-sonnet-4-5-20250929"),
     system: SYSTEM_PROMPT,
     tools,
-    stopWhen: stepCountIs(5),
+    stopWhen: stepCountIs(8),
     messages,
   });
 

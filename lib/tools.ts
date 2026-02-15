@@ -7,6 +7,7 @@ import {
   transactions,
   ledgerParties,
   ledgerEntries,
+  orders,
 } from "./db/schema";
 
 // ── Ranked matching helpers ─────────────────────────────────────────
@@ -363,16 +364,17 @@ export function createTools(storeId: number) {
           price: price?.toString() ?? null,
         });
 
-        const { name, newStock, minStock } = updated[0];
+        const { id: soldItemId, name, newStock, minStock } = updated[0];
         const warning =
           newStock <= minStock
             ? `Low stock alert: ${name} is now at ${newStock} (min: ${minStock}).`
             : null;
+        const needsAutoReorder = newStock <= minStock;
 
         return success(
           "SALE_RECORDED",
-          `Sale recorded: ${name} x${qty}. Stock now: ${newStock}.`,
-          { newStock, warning },
+          `Sale recorded: ${name} x${qty}. Stock now: ${newStock}.${needsAutoReorder ? ` CRITICAL: ${name} is at ${newStock} — USE auto_reorder NOW to order more from Amazon!` : ""}`,
+          { newStock, warning, needsAutoReorder, itemId: soldItemId },
         );
       },
     }),
@@ -401,6 +403,7 @@ export function createTools(storeId: number) {
         const recorded: string[] = [];
         const failed: string[] = [];
         const warnings: string[] = [];
+        const lowStockItemIds: number[] = [];
 
         for (const entry of saleItems) {
           const updated = await db
@@ -423,14 +426,14 @@ export function createTools(storeId: number) {
             });
 
           if (!updated.length) {
-            const [item] = await db
+            const [foundItem] = await db
               .select({ name: items.name, currentStock: items.currentStock })
               .from(items)
               .where(and(eq(items.id, entry.item_id), eq(items.storeId, storeId)))
               .limit(1);
             failed.push(
-              item
-                ? `${item.name} (stock: ${item.currentStock}, needed: ${entry.qty})`
+              foundItem
+                ? `${foundItem.name} (stock: ${foundItem.currentStock}, needed: ${entry.qty})`
                 : `item#${entry.item_id} (not found)`,
             );
             continue;
@@ -448,18 +451,24 @@ export function createTools(storeId: number) {
           recorded.push(`${name} x${entry.qty}`);
           if (newStock <= minStock) {
             warnings.push(`${name}: ${newStock} left (min: ${minStock})`);
+            lowStockItemIds.push(updated[0].id);
           }
         }
 
         const parts: string[] = [];
         if (recorded.length) parts.push(`Sold: ${recorded.join(", ")}.`);
         if (failed.length) parts.push(`Failed: ${failed.join(", ")}.`);
-        if (warnings.length) parts.push(`Low stock: ${warnings.join(", ")}.`);
+        if (warnings.length) {
+          parts.push(`Low stock: ${warnings.join(", ")}.`);
+          parts.push("CRITICAL: Use auto_reorder NOW to order these items from Amazon!");
+        }
 
         return recorded.length
           ? success("SALE_RECORDED", parts.join(" "), {
               recorded: recorded.length,
               failed: failed.length,
+              needsAutoReorder: lowStockItemIds.length > 0,
+              lowStockItemIds,
             })
           : fail("SALE_FAILED", parts.join(" "));
       },
@@ -1099,6 +1108,319 @@ export function createTools(storeId: number) {
           "REORDER_SUGGESTED",
           `${suggestions.length} item(s) need reordering.`,
           { suggestions },
+        );
+      },
+    }),
+
+    // ── Auto-reorder from the internet ─────────────────────────────
+
+    auto_reorder: tool({
+      description:
+        "Automatically reorder items that are critically low in stock. Finds items below a threshold, places orders on Amazon India (generates real buy links), and logs each order. Use this PROACTIVELY after a sale drops stock below min, or when the user asks to reorder/order items.",
+      inputSchema: z.object({
+        threshold: z
+          .number()
+          .int()
+          .min(0)
+          .nullable()
+          .describe(
+            "Stock threshold below which items are reordered. Null = use each item's minStock.",
+          ),
+        item_ids: z
+          .array(z.number().int())
+          .nullable()
+          .describe(
+            "Specific item IDs to reorder. Null = auto-detect all low-stock items.",
+          ),
+        source: z
+          .enum(["AMAZON_IN", "JIOMART", "BIGBASKET"])
+          .default("AMAZON_IN")
+          .describe("Where to order from (default: Amazon India)"),
+      }),
+      execute: async ({ threshold, item_ids, source }) => {
+        // 1. Find items that need reordering
+        let lowItems: (typeof items.$inferSelect)[];
+
+        if (item_ids && item_ids.length > 0) {
+          // Reorder specific items
+          lowItems = await db
+            .select()
+            .from(items)
+            .where(
+              and(
+                eq(items.storeId, storeId),
+                or(...item_ids.map((id) => eq(items.id, id))),
+              ),
+            );
+        } else if (threshold != null) {
+          // Items below explicit threshold
+          lowItems = await db
+            .select()
+            .from(items)
+            .where(
+              and(
+                eq(items.storeId, storeId),
+                lte(items.currentStock, threshold),
+              ),
+            )
+            .orderBy(sql`${items.currentStock}`)
+            .limit(20);
+        } else {
+          // Items at or below their own minStock
+          lowItems = await db
+            .select()
+            .from(items)
+            .where(
+              and(
+                eq(items.storeId, storeId),
+                lte(items.currentStock, items.minStock),
+              ),
+            )
+            .orderBy(sql`${items.currentStock} - ${items.minStock}`)
+            .limit(20);
+        }
+
+        if (!lowItems.length) {
+          return success(
+            "NO_REORDER_NEEDED",
+            "Sab items stock mein hain. Kuch order karne ki zaroorat nahi.",
+          );
+        }
+
+        // 2. Generate order links and log each order
+        const orderedItems: {
+          name: string;
+          qty: number;
+          currentStock: number;
+          url: string;
+          estimatedCost: number | null;
+          orderId: number;
+        }[] = [];
+
+        for (const item of lowItems) {
+          // Calculate how much to order: bring stock up to 2x minStock
+          const orderQty = Math.max(
+            item.minStock * 2 - item.currentStock,
+            item.minStock,
+            1,
+          );
+
+          // Build a smart search query: item name + unit context for better results
+          // e.g. "Maggi" → "Maggi noodles", "Amul Milk 500ml" stays as-is
+          const unitHint =
+            item.unit && !item.name.toLowerCase().includes(item.unit.toLowerCase())
+              ? ` ${item.unit}`
+              : "";
+          const rawQuery = `${item.name}${unitHint}`.trim();
+          const searchQuery = encodeURIComponent(rawQuery);
+          let searchUrl: string;
+
+          switch (source) {
+            case "JIOMART":
+              searchUrl = `https://www.jiomart.com/search/${searchQuery}`;
+              break;
+            case "BIGBASKET":
+              searchUrl = `https://www.bigbasket.com/ps/?q=${searchQuery}`;
+              break;
+            case "AMAZON_IN":
+            default:
+              // Amazon India grocery/pantry search — rh= filters to Grocery & Gourmet category
+              searchUrl = `https://www.amazon.in/s?k=${searchQuery}&i=grocery&ref=nb_sb_noss`;
+              break;
+          }
+
+          // Estimate cost if we know the last cost price
+          const estimatedCost = item.lastCostPrice
+            ? parseFloat(item.lastCostPrice) * orderQty
+            : null;
+
+          // Log the order in DB
+          const [order] = await db
+            .insert(orders)
+            .values({
+              storeId,
+              itemId: item.id,
+              qty: orderQty,
+              source,
+              searchUrl,
+              estimatedCost: estimatedCost?.toString() ?? null,
+              status: "PLACED",
+            })
+            .returning();
+
+          orderedItems.push({
+            name: item.name,
+            qty: orderQty,
+            currentStock: item.currentStock,
+            url: searchUrl,
+            estimatedCost,
+            orderId: order.id,
+          });
+        }
+
+        // 3. Build summary
+        const totalEstimated = orderedItems.reduce(
+          (sum, o) => sum + (o.estimatedCost ?? 0),
+          0,
+        );
+
+        const sourceLabel =
+          source === "AMAZON_IN"
+            ? "Amazon India"
+            : source === "JIOMART"
+              ? "JioMart"
+              : "BigBasket";
+
+        return success(
+          "ORDERS_PLACED",
+          `${orderedItems.length} item(s) ka order ${sourceLabel} pe place kar diya hai!`,
+          {
+            orders: orderedItems.map((o) => ({
+              orderId: o.orderId,
+              name: o.name,
+              orderQty: o.qty,
+              currentStock: o.currentStock,
+              buyLink: o.url,
+              estimatedCost: o.estimatedCost,
+            })),
+            totalEstimatedCost: totalEstimated || null,
+            source: sourceLabel,
+          },
+        );
+      },
+    }),
+
+    list_orders: tool({
+      description:
+        "List recent auto-reorders placed for this store. Shows order status, items, and buy links.",
+      inputSchema: z.object({
+        status: z
+          .enum(["PLACED", "CONFIRMED", "DELIVERED", "CANCELLED"])
+          .nullable()
+          .describe("Filter by status, or null for all"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .default(10)
+          .describe("Max orders to return (default 10)"),
+      }),
+      execute: async ({ status, limit }) => {
+        const conditions = [eq(orders.storeId, storeId)];
+        if (status) conditions.push(eq(orders.status, status));
+
+        const recentOrders = await db
+          .select({
+            id: orders.id,
+            itemId: orders.itemId,
+            qty: orders.qty,
+            source: orders.source,
+            searchUrl: orders.searchUrl,
+            estimatedCost: orders.estimatedCost,
+            status: orders.status,
+            createdAt: orders.createdAt,
+          })
+          .from(orders)
+          .where(and(...conditions))
+          .orderBy(desc(orders.createdAt))
+          .limit(limit);
+
+        if (!recentOrders.length) {
+          return success("NO_ORDERS", "Koi recent order nahi hai.", {
+            orders: [],
+          });
+        }
+
+        // Resolve item names
+        const itemIds = [...new Set(recentOrders.map((o) => o.itemId))];
+        const itemRows = await db
+          .select({ id: items.id, name: items.name })
+          .from(items)
+          .where(or(...itemIds.map((id) => eq(items.id, id))));
+        const itemMap = new Map(itemRows.map((r) => [r.id, r.name]));
+
+        return success(
+          "ORDERS_LISTED",
+          `${recentOrders.length} recent order(s).`,
+          {
+            orders: recentOrders.map((o) => ({
+              orderId: o.id,
+              itemName: itemMap.get(o.itemId) ?? `item#${o.itemId}`,
+              qty: o.qty,
+              source: o.source,
+              buyLink: o.searchUrl,
+              estimatedCost: o.estimatedCost
+                ? parseFloat(o.estimatedCost)
+                : null,
+              status: o.status,
+              createdAt: o.createdAt,
+            })),
+          },
+        );
+      },
+    }),
+
+    update_order_status: tool({
+      description:
+        "Update the status of an auto-reorder (e.g., mark as CONFIRMED when user clicks the buy link, or DELIVERED when received, or CANCELLED).",
+      inputSchema: z.object({
+        order_id: z.number().int().describe("Order ID to update"),
+        new_status: z
+          .enum(["CONFIRMED", "DELIVERED", "CANCELLED"])
+          .describe("New status"),
+      }),
+      execute: async ({ order_id, new_status }) => {
+        const [order] = await db
+          .select()
+          .from(orders)
+          .where(
+            and(eq(orders.id, order_id), eq(orders.storeId, storeId)),
+          )
+          .limit(1);
+
+        if (!order)
+          return fail("NOT_FOUND", `Order #${order_id} not found.`);
+
+        await db
+          .update(orders)
+          .set({ status: new_status })
+          .where(eq(orders.id, order_id));
+
+        // If delivered, auto-add stock
+        if (new_status === "DELIVERED") {
+          await db
+            .update(items)
+            .set({
+              currentStock: sql`${items.currentStock} + ${order.qty}`,
+            })
+            .where(eq(items.id, order.itemId));
+
+          await db.insert(transactions).values({
+            storeId,
+            type: "STOCK_IN",
+            itemId: order.itemId,
+            qty: order.qty,
+            price: order.estimatedCost,
+          });
+
+          const [item] = await db
+            .select({ name: items.name, currentStock: items.currentStock })
+            .from(items)
+            .where(eq(items.id, order.itemId))
+            .limit(1);
+
+          return success(
+            "ORDER_DELIVERED",
+            `Order #${order_id} delivered! ${item?.name ?? "Item"} ka stock update ho gaya: +${order.qty}. New stock: ${(item?.currentStock ?? 0) + order.qty}.`,
+            { orderId: order_id, addedStock: order.qty },
+          );
+        }
+
+        return success(
+          "ORDER_UPDATED",
+          `Order #${order_id} status: ${new_status}.`,
+          { orderId: order_id, status: new_status },
         );
       },
     }),
