@@ -1,4 +1,5 @@
 import {
+  bigint,
   integer,
   json,
   numeric,
@@ -8,10 +9,24 @@ import {
   timestamp,
 } from "drizzle-orm/pg-core";
 
-// ── Items (SKU catalog) ─────────────────────────────────────────────────────
+// ── Stores (one per Telegram chat) ──────────────────────────────────────────
+
+export const stores = pgTable("stores", {
+  id: serial("id").primaryKey(),
+  telegramChatId: bigint("telegram_chat_id", { mode: "number" })
+    .notNull()
+    .unique(),
+  name: text("name").notNull().default("My Kirana Store"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ── Items (SKU catalog, scoped to store) ────────────────────────────────────
 
 export const items = pgTable("items", {
   id: serial("id").primaryKey(),
+  storeId: integer("store_id")
+    .notNull()
+    .references(() => stores.id),
   name: text("name").notNull(),
   aliases: json("aliases").$type<string[]>().notNull().default([]),
   unit: text("unit"), // e.g. "pcs", "kg", "litre"
@@ -20,10 +35,13 @@ export const items = pgTable("items", {
   lastCostPrice: numeric("last_cost_price"),
 });
 
-// ── Transactions (sales, stock-ins, adjustments) ────────────────────────────
+// ── Transactions (sales, stock-ins, adjustments — scoped to store) ──────────
 
 export const transactions = pgTable("transactions", {
   id: serial("id").primaryKey(),
+  storeId: integer("store_id")
+    .notNull()
+    .references(() => stores.id),
   type: text("type").notNull(), // SALE | STOCK_IN | ADJUST
   itemId: integer("item_id")
     .notNull()
@@ -33,11 +51,14 @@ export const transactions = pgTable("transactions", {
   ts: timestamp("ts").notNull().defaultNow(),
 });
 
-// ── Ledger parties (people who owe / are owed) ──────────────────────────────
+// ── Ledger parties (people who owe / are owed — scoped to store) ────────────
 
 export const ledgerParties = pgTable("ledger_parties", {
   id: serial("id").primaryKey(),
-  name: text("name").notNull().unique(),
+  storeId: integer("store_id")
+    .notNull()
+    .references(() => stores.id),
+  name: text("name").notNull(),
   phone: text("phone"),
 });
 
