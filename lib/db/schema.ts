@@ -9,13 +9,25 @@ import {
   timestamp,
 } from "drizzle-orm/pg-core";
 
-// ── Stores (one per Telegram chat) ──────────────────────────────────────────
+// ── Users (Telegram identity) ───────────────────────────────────────────────
+
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  telegramId: bigint("telegram_id", { mode: "number" }).notNull().unique(),
+  firstName: text("first_name").notNull(),
+  lastName: text("last_name"),
+  username: text("username"),
+  photoUrl: text("photo_url"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ── Stores (one per user, linked via userId) ────────────────────────────────
 
 export const stores = pgTable("stores", {
   id: serial("id").primaryKey(),
-  telegramChatId: bigint("telegram_chat_id", { mode: "number" })
+  userId: integer("user_id")
     .notNull()
-    .unique(),
+    .references(() => users.id),
   name: text("name").notNull().default("My Kirana Store"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
