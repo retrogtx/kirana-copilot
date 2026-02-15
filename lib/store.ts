@@ -1,25 +1,78 @@
 import { eq } from "drizzle-orm";
 import { db } from "./db";
-import { stores } from "./db/schema";
+import { users, stores } from "./db/schema";
+
+/** Telegram user info passed from bot context or login widget. */
+export interface TelegramUser {
+  id: number; // Telegram user ID
+  first_name: string;
+  last_name?: string;
+  username?: string;
+  photo_url?: string;
+}
 
 /**
- * Get the store ID for a Telegram chat, or create a new store on first contact.
+ * Find or create a user + store from Telegram identity.
+ * Used by both the bot (ctx.from) and the dashboard (login widget).
  */
-export async function getOrCreateStore(chatId: number): Promise<number> {
-  // Try to find existing store
-  const [existing] = await db
+export async function getOrCreateStore(tgUser: TelegramUser): Promise<number> {
+  // 1. Upsert user (insert or update on conflict)
+  const [user] = await db
+    .insert(users)
+    .values({
+      telegramId: tgUser.id,
+      firstName: tgUser.first_name,
+      lastName: tgUser.last_name ?? null,
+      username: tgUser.username ?? null,
+      photoUrl: tgUser.photo_url ?? null,
+    })
+    .onConflictDoUpdate({
+      target: users.telegramId,
+      set: {
+        firstName: tgUser.first_name,
+        lastName: tgUser.last_name ?? null,
+        username: tgUser.username ?? null,
+        photoUrl: tgUser.photo_url ?? null,
+      },
+    })
+    .returning({ id: users.id });
+
+  // 2. Find or create store for this user
+  let [store] = await db
     .select({ id: stores.id })
     .from(stores)
-    .where(eq(stores.telegramChatId, chatId))
+    .where(eq(stores.userId, user.id))
     .limit(1);
 
-  if (existing) return existing.id;
+  if (!store) {
+    // Use a subquery-safe approach: try insert, if conflict just select
+    try {
+      [store] = await db
+        .insert(stores)
+        .values({ userId: user.id })
+        .returning({ id: stores.id });
+    } catch {
+      // Race condition: another request created it first
+      [store] = await db
+        .select({ id: stores.id })
+        .from(stores)
+        .where(eq(stores.userId, user.id))
+        .limit(1);
+    }
+  }
 
-  // First time — create store
-  const [newStore] = await db
-    .insert(stores)
-    .values({ telegramChatId: chatId })
-    .returning({ id: stores.id });
+  return store.id;
+}
 
-  return newStore.id;
+/**
+ * Get the store ID for an already-known user ID (e.g. from a dashboard session).
+ */
+export async function getStoreByUserId(userId: number): Promise<number | null> {
+  const [store] = await db
+    .select({ id: stores.id })
+    .from(stores)
+    .where(eq(stores.userId, userId))
+    .limit(1);
+
+  return store?.id ?? null;
 }

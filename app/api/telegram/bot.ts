@@ -117,11 +117,19 @@ bot.on("message:voice", async (ctx) => {
 // ── Core pipeline ───────────────────────────────────────────────────
 
 async function processMessage(ctx: Context, text: string) {
-  const chatId = ctx.chat?.id;
-  if (!chatId) return;
+  const from = ctx.from;
+  if (!from) return;
 
   try {
-    const storeId = await getOrCreateStore(chatId);
+    // 1. Resolve user + store from Telegram identity (auto-creates on first message)
+    const storeId = await getOrCreateStore({
+      id: from.id,
+      first_name: from.first_name,
+      last_name: from.last_name,
+      username: from.username,
+    });
+
+    // 2. Run the agent — Claude calls tools as needed and returns a reply
     const reply = await runAgent(text, storeId);
     await ctx.reply(reply);
   } catch (err) {
