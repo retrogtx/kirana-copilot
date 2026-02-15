@@ -56,9 +56,13 @@ export async function getDailySummary(
   storeId: number,
   date?: string,
 ): Promise<DailySummary> {
-  const dateStr = date ?? new Date().toISOString().slice(0, 10);
-  const dayStart = new Date(`${dateStr}T00:00:00.000Z`);
-  const dayEnd = new Date(`${dateStr}T23:59:59.999Z`);
+  // Use IST (UTC+5:30) so "today" matches the shopkeeper's local day
+  const now = new Date();
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const istNow = new Date(now.getTime() + istOffset);
+  const dateStr = date ?? istNow.toISOString().slice(0, 10);
+  const dayStart = new Date(`${dateStr}T00:00:00.000+05:30`);
+  const dayEnd = new Date(`${dateStr}T23:59:59.999+05:30`);
 
   const dayTxns = await db
     .select({
@@ -77,31 +81,25 @@ export async function getDailySummary(
   const sales = dayTxns.filter((t) => t.type === "SALE");
   const stockIns = dayTxns.filter((t) => t.type === "STOCK_IN");
 
-  // Ledger activity
-  const storeParties = await db
-    .select({ id: ledgerParties.id })
-    .from(ledgerParties)
-    .where(eq(ledgerParties.storeId, storeId));
+  // Ledger activity — join ledger_entries through ledger_parties to scope by store
+  const dayLedger = await db
+    .select({ deltaAmount: ledgerEntries.deltaAmount })
+    .from(ledgerEntries)
+    .innerJoin(ledgerParties, eq(ledgerEntries.partyId, ledgerParties.id))
+    .where(
+      and(
+        eq(ledgerParties.storeId, storeId),
+        sql`${ledgerEntries.ts} >= ${dayStart}`,
+        sql`${ledgerEntries.ts} <= ${dayEnd}`,
+      ),
+    );
 
-  const partyIds = storeParties.map((p) => p.id);
-  let newUdhar = 0;
-  let paymentsReceived = 0;
-
-  if (partyIds.length) {
-    const dayLedger = await db
-      .select({ deltaAmount: ledgerEntries.deltaAmount })
-      .from(ledgerEntries)
-      .where(
-        sql`${ledgerEntries.partyId} IN (${sql.join(partyIds.map((id) => sql`${id}`), sql`, `)}) AND ${ledgerEntries.ts} >= ${dayStart} AND ${ledgerEntries.ts} <= ${dayEnd}`,
-      );
-
-    newUdhar = dayLedger
-      .filter((e) => parseFloat(e.deltaAmount) > 0)
-      .reduce((sum, e) => sum + parseFloat(e.deltaAmount), 0);
-    paymentsReceived = dayLedger
-      .filter((e) => parseFloat(e.deltaAmount) < 0)
-      .reduce((sum, e) => sum + Math.abs(parseFloat(e.deltaAmount)), 0);
-  }
+  const newUdhar = dayLedger
+    .filter((e) => parseFloat(e.deltaAmount) > 0)
+    .reduce((sum, e) => sum + parseFloat(e.deltaAmount), 0);
+  const paymentsReceived = dayLedger
+    .filter((e) => parseFloat(e.deltaAmount) < 0)
+    .reduce((sum, e) => sum + Math.abs(parseFloat(e.deltaAmount)), 0);
 
   return {
     date: dateStr,
@@ -142,7 +140,6 @@ export async function getLedgerOverview(
       id: ledgerParties.id,
       name: ledgerParties.name,
       phone: ledgerParties.phone,
-      balance: sql<number>`COALESCE((SELECT SUM(${ledgerEntries.deltaAmount}::numeric) FROM ${ledgerEntries} WHERE ${ledgerEntries.partyId} = ${ledgerParties.id}), 0)`,
     })
     .from(ledgerParties)
     .where(eq(ledgerParties.storeId, storeId));
@@ -150,6 +147,14 @@ export async function getLedgerOverview(
   const result: LedgerPartyOverview[] = [];
 
   for (const p of parties) {
+    // Get balance separately to avoid Drizzle subquery issues
+    const [{ balance }] = await db
+      .select({
+        balance: sql<number>`COALESCE(SUM(${ledgerEntries.deltaAmount}::numeric), 0)`,
+      })
+      .from(ledgerEntries)
+      .where(eq(ledgerEntries.partyId, p.id));
+
     const entries = await db
       .select({
         deltaAmount: ledgerEntries.deltaAmount,
@@ -165,7 +170,7 @@ export async function getLedgerOverview(
       id: p.id,
       name: p.name,
       phone: p.phone,
-      balance: Number(p.balance),
+      balance: Number(balance),
       recentEntries: entries.map((e) => ({
         amount: parseFloat(e.deltaAmount),
         note: e.note,
