@@ -21,13 +21,36 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-// ── Stores (one per user, linked via userId) ────────────────────────────────
+// ── Organizations ───────────────────────────────────────────────────────────
 
-export const stores = pgTable("stores", {
+export const organizations = pgTable("organizations", {
   id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  inviteCode: text("invite_code").notNull().unique(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ── Org members (links users to orgs with a role) ───────────────────────────
+
+export const orgMembers = pgTable("org_members", {
+  id: serial("id").primaryKey(),
+  orgId: integer("org_id")
+    .notNull()
+    .references(() => organizations.id),
   userId: integer("user_id")
     .notNull()
     .references(() => users.id),
+  role: text("role").notNull().default("member"), // "admin" | "member"
+  joinedAt: timestamp("joined_at").notNull().defaultNow(),
+});
+
+// ── Stores (one per org, linked via orgId) ──────────────────────────────────
+
+export const stores = pgTable("stores", {
+  id: serial("id").primaryKey(),
+  orgId: integer("org_id")
+    .notNull()
+    .references(() => organizations.id),
   name: text("name").notNull().default("My Kirana Store"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

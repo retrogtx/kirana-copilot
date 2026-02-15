@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSession } from "../../lib/auth";
-import { getStoreByUserId } from "../../lib/store";
+import { getUserOrg } from "../../lib/store";
 import {
   getDailySummary,
   getInventory,
@@ -16,8 +16,6 @@ export default async function DashboardPage() {
   const session = await getSession();
   if (!session) redirect("/");
 
-  const storeId = await getStoreByUserId(session.userId);
-
   const [user] = await db
     .select({
       firstName: users.firstName,
@@ -28,16 +26,29 @@ export default async function DashboardPage() {
     .where(eq(users.id, session.userId))
     .limit(1);
 
-  if (!storeId) {
+  const org = await getUserOrg(session.userId);
+
+  // No org yet — tell them to set up via the Telegram bot
+  if (!org) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#0a0a0a]">
         <div className="text-center">
-          <p className="text-sm text-[#666]">No store found.</p>
-          <p className="mt-1 text-xs text-[#444]">Chat with the bot on Telegram first.</p>
+          <p className="text-sm text-[#999]">No organization found.</p>
+          <p className="mt-2 text-xs text-[#555]">
+            Message the bot on Telegram to create or join an organization.
+          </p>
+          <p className="mt-1 text-xs text-[#444]">
+            Send <span className="font-mono text-[#888]">/start</span> to get started.
+          </p>
+          <div className="mt-6">
+            <LogoutButton />
+          </div>
         </div>
       </div>
     );
   }
+
+  const storeId = org.storeId;
 
   const [summary, inventory, ledger, recentTxns] = await Promise.all([
     getDailySummary(storeId),
@@ -51,9 +62,18 @@ export default async function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#ededed] antialiased">
-      {/* Nav — barely there */}
+      {/* Nav */}
       <nav className="flex items-center justify-between px-6 py-4">
-        <span className="text-[13px] font-medium tracking-tight text-[#888]">Kirana Copilot</span>
+        <div className="flex items-center gap-3">
+          <span className="text-[13px] font-medium tracking-tight text-[#888]">Kirana Copilot</span>
+          <span className="text-[11px] text-[#333]">/</span>
+          <span className="text-[13px] text-[#555]">{org.orgName}</span>
+          {org.role === "admin" && (
+            <span className="rounded-full bg-[#1a1a1a] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-amber-500">
+              admin
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-3">
           {user?.photoUrl && <img src={user.photoUrl} alt="" className="h-5 w-5 rounded-full opacity-70" />}
           <span className="text-[13px] text-[#555]">{user?.firstName}</span>
@@ -62,6 +82,18 @@ export default async function DashboardPage() {
       </nav>
 
       <div className="mx-auto max-w-[1200px] px-6 pb-20">
+        {/* Invite code banner for admins */}
+        {org.role === "admin" && (
+          <div className="mb-6 flex items-center justify-between rounded-lg border border-[#1a1a1a] bg-[#111] px-5 py-3">
+            <span className="text-[12px] text-[#666]">
+              Invite code — share with your team to join this org
+            </span>
+            <span className="font-mono text-[14px] font-medium tracking-widest text-amber-500">
+              {org.inviteCode}
+            </span>
+          </div>
+        )}
+
         {/* Header */}
         <div className="pb-8 pt-4">
           <p className="text-[11px] font-medium uppercase tracking-[0.15em] text-[#444]">
@@ -70,7 +102,7 @@ export default async function DashboardPage() {
           <h1 className="mt-1 text-[28px] font-semibold tracking-tight text-[#fafafa]">Overview</h1>
         </div>
 
-        {/* Metrics — clean row, no cards, no borders */}
+        {/* Metrics */}
         <div className="grid grid-cols-2 gap-x-10 gap-y-6 pb-10 sm:grid-cols-4">
           <Metric label="Revenue" value={formatINR(summary.salesRevenue)} />
           <Metric label="Sales" value={`${summary.salesQty}`} sub={`${summary.salesCount} orders`} />
