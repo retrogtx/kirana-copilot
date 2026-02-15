@@ -7,19 +7,27 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "webhook:set": "bun run scripts/set-webhook.ts"
+    "webhook:set": "bun run scripts/set-webhook.ts",
+    "db:push": "bun run scripts/migrate.ts"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.44",
+    "@neondatabase/serverless": "^1.0.2",
+    "ai": "^6.0.86",
+    "drizzle-orm": "^0.45.1",
     "grammy": "^1.40.0",
     "next": "16.1.6",
+    "openai": "^6.22.0",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "drizzle-kit": "^0.31.9",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
