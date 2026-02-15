@@ -1,11 +1,12 @@
 /**
  * Kirana Copilot — Telegram Bot
  *
- * Simplified pipeline:
- *   message (text/voice) → resolve store → [transcribe] → runAgent → reply
+ * Pipeline:
+ *   message (text/voice) -> resolve store -> [transcribe] -> runAgent -> reply
  *
- * Claude handles everything via tool calls: searching items, recording sales,
- * looking up customers, managing udhar — all scoped to the user's store.
+ * Includes:
+ *   - Message deduplication (idempotency guard against Telegram re-deliveries)
+ *   - Voice transcription via OpenAI Whisper
  */
 
 import { Bot, type Context } from "grammy";
@@ -13,18 +14,36 @@ import OpenAI from "openai";
 import { getOrCreateStore } from "../../../lib/store";
 import { runAgent } from "../../../lib/agent";
 
-// ── Bot init ────────────────────────────────────────────────────────────────
+// ── Bot init ────────────────────────────────────────────────────────
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is unset");
 
 export const bot = new Bot(token);
 
-// ── OpenAI client (for Whisper STT) ─────────────────────────────────────────
+// ── Idempotency guard ──────────────────────────────────────────────
+// Prevents duplicate processing when Telegram re-delivers updates.
+
+const processedUpdates = new Set<string>();
+const MAX_PROCESSED = 1000;
+
+function markProcessed(chatId: number, messageId: number): boolean {
+  const key = `${chatId}:${messageId}`;
+  if (processedUpdates.has(key)) return true; // already processed
+  processedUpdates.add(key);
+  // Evict oldest to prevent unbounded growth
+  if (processedUpdates.size > MAX_PROCESSED) {
+    const first = processedUpdates.values().next().value;
+    if (first) processedUpdates.delete(first);
+  }
+  return false; // first time
+}
+
+// ── OpenAI client (for Whisper STT) ─────────────────────────────────
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ── /start command ──────────────────────────────────────────────────────────
+// ── /start command ──────────────────────────────────────────────────
 
 bot.command("start", (ctx) =>
   ctx.reply(
@@ -36,22 +55,37 @@ bot.command("start", (ctx) =>
       '• "Ramesh se 200 mil gaye"\n' +
       '• "Ramesh ka kitna udhar hai?"\n' +
       '• "Kya khatam ho raha hai?"\n' +
-      '• "Aaj ka hisaab"\n\n' +
+      '• "Aaj ka hisaab"\n' +
+      '• "Recent actions dikhao"\n' +
+      '• "Undo last action"\n\n' +
       "Text ya voice note — dono chalega!",
   ),
 );
 
-// ── Text messages ───────────────────────────────────────────────────────────
+// ── Text messages ───────────────────────────────────────────────────
 
 bot.on("message:text", async (ctx) => {
+  const chatId = ctx.chat?.id;
+  const messageId = ctx.message?.message_id;
+  if (!chatId || !messageId) return;
+
+  if (markProcessed(chatId, messageId)) return;
+
   const text = ctx.message.text.trim();
   if (!text) return;
+
   await processMessage(ctx, text);
 });
 
-// ── Voice notes ─────────────────────────────────────────────────────────────
+// ── Voice notes ─────────────────────────────────────────────────────
 
 bot.on("message:voice", async (ctx) => {
+  const chatId = ctx.chat?.id;
+  const messageId = ctx.message?.message_id;
+  if (!chatId || !messageId) return;
+
+  if (markProcessed(chatId, messageId)) return;
+
   await ctx.reply("Voice note mili — transcribe kar raha hoon...");
 
   try {
@@ -72,7 +106,7 @@ bot.on("message:voice", async (ctx) => {
       return;
     }
 
-    await ctx.reply(`🎤 "${text}"`);
+    await ctx.reply(`"${text}"`);
     await processMessage(ctx, text);
   } catch (err) {
     console.error("Voice transcription error:", err);
@@ -80,20 +114,15 @@ bot.on("message:voice", async (ctx) => {
   }
 });
 
-// ── Core pipeline ───────────────────────────────────────────────────────────
+// ── Core pipeline ───────────────────────────────────────────────────
 
 async function processMessage(ctx: Context, text: string) {
   const chatId = ctx.chat?.id;
   if (!chatId) return;
 
   try {
-    // 1. Resolve store (auto-creates on first message)
     const storeId = await getOrCreateStore(chatId);
-
-    // 2. Run the agent — Claude calls tools as needed and returns a reply
     const reply = await runAgent(text, storeId);
-
-    // 3. Send reply
     await ctx.reply(reply);
   } catch (err) {
     console.error("Agent error:", err);
