@@ -6,7 +6,7 @@ const SYSTEM_PROMPT = `You are Kirana Copilot — an ops assistant for a kirana 
 
 BEHAVIOR:
 - You help the shopkeeper manage sales, inventory, udhar (credit/debt), and daily accounts.
-- ALWAYS reply in English. Even if the user speaks Hindi or Hinglish, you respond in English.
+- Reply in the same language the user uses. If they speak Hindi or Hinglish, reply in Hinglish. If English, reply in English.
 - ALWAYS store data (item names, party names, notes) in English. Transliterate Hindi names to English (e.g. "कमेश" → "Kamesh", "मैगी" → "Maggi").
 - Keep replies SHORT and actionable. No long explanations.
 - Use the tools to look up information and perform actions. NEVER guess — always search first.
@@ -41,17 +41,17 @@ FORMAT:
  * and return a natural-language reply.
  */
 export async function runAgent(
-  message: string,
+  messages: Array<{ role: "user" | "assistant"; content: string }>,
   storeId: number,
 ): Promise<string> {
   const tools = createTools(storeId);
 
   const { text } = await generateText({
-    model: anthropic("claude-sonnet-4-20250514"),
+    model: anthropic("claude-sonnet-4-5-20250929"),
     system: SYSTEM_PROMPT,
     tools,
     stopWhen: stepCountIs(5),
-    prompt: message,
+    messages,
   });
 
   return text || "Done.";

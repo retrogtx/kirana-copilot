@@ -53,6 +53,36 @@ function markProcessed(chatId: number, messageId: number): boolean {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// ── Conversation memory ─────────────────────────────────────────────
+// Rolling history per Telegram chat for multi-turn context.
+// e.g. "Maggi 10 bik gayi" → "aur 5 Dairy Milk bhi" works naturally.
+
+type ChatMsg = { role: "user" | "assistant"; content: string };
+
+const chatHistories = new Map<number, ChatMsg[]>();
+const MAX_HISTORY = 10; // last ~5 turns
+const MAX_CHATS = 500;
+
+function getChatHistory(chatId: number): ChatMsg[] {
+  if (!chatHistories.has(chatId)) {
+    chatHistories.set(chatId, []);
+  }
+  return chatHistories.get(chatId)!;
+}
+
+function appendMessage(chatId: number, role: "user" | "assistant", content: string) {
+  const history = getChatHistory(chatId);
+  history.push({ role, content });
+  if (history.length > MAX_HISTORY) {
+    history.splice(0, history.length - MAX_HISTORY);
+  }
+  // Evict oldest chat when map grows too large
+  if (chatHistories.size > MAX_CHATS) {
+    const oldest = chatHistories.keys().next().value;
+    if (oldest !== undefined) chatHistories.delete(oldest);
+  }
+}
+
 // ── /start command ──────────────────────────────────────────────────
 // Returning user: shows help. New user: asks them to /create or /join.
 
@@ -279,6 +309,11 @@ bot.on("message:voice", async (ctx) => {
 async function processMessage(ctx: Context, text: string) {
   const from = ctx.from;
   if (!from) return;
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  // Send a visible "thinking" message, then edit it with the reply
+  const thinking = await ctx.reply("...");
 
   try {
     // 1. Resolve user + store from Telegram identity
@@ -291,18 +326,28 @@ async function processMessage(ctx: Context, text: string) {
 
     // 2. If no org/store yet, prompt them to set up
     if (!storeId) {
-      await ctx.reply(
+      await ctx.api.editMessageText(
+        chatId,
+        thinking.message_id,
         "You're not in any organization yet.\n" +
           "Send /start to create one, or /join <code> to join an existing one.",
       );
       return;
     }
 
-    // 3. Run the agent — Claude calls tools as needed and returns a reply
-    const reply = await runAgent(text, storeId);
-    await ctx.reply(reply);
+    // 3. Build conversation history and run agent
+    appendMessage(chatId, "user", text);
+    const history = getChatHistory(chatId);
+    const reply = await runAgent(history, storeId);
+    appendMessage(chatId, "assistant", reply);
+
+    await ctx.api.editMessageText(chatId, thinking.message_id, reply);
   } catch (err) {
     console.error("Agent error:", err);
-    await ctx.reply("Kuch gadbad ho gayi. Dobara try karo.");
+    await ctx.api.editMessageText(
+      chatId,
+      thinking.message_id,
+      "Kuch gadbad ho gayi. Dobara try karo.",
+    );
   }
 }
